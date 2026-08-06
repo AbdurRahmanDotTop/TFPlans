@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "174888666914",
+    "firebase_url": "https://techily-fly-15298-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "techily-fly-15298",
+    "storage_bucket": "techily-fly-15298.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:174888666914:android:3e7c1db979632c4c09077b",
+        "android_client_info": {
+          "package_name": "com.techilyfly.tfplans"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "174888666914-m50igfhfh0mmr5ebt5ne4a4achn9ucqm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.techilyfly.tfplans",
+            "certificate_hash": "7ab03187756d837ea6fc869f1df0183d53be0af3"
+          }
+        },
+        {
+          "client_id": "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCS2YZJryJEozvJbkKuDC9NfrTUpSrWR4s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

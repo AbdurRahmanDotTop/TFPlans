@@ -1,0 +1,6 @@
+{
+  "name": "TF Plans",
+  "description": "A modern notes application like Google Keep.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
