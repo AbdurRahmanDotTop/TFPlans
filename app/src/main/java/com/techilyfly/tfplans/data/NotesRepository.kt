@@ -24,12 +24,35 @@ class NotesRepository(
     private val noteDao: NoteDao,
     private val firestore: FirebaseFirestore,
     private val auth: FirebaseAuth,
-    private val preferencesRepository: UserPreferencesRepository
+    private val preferencesRepository: UserPreferencesRepository,
+    private val driveMediaManager: DriveMediaManager
 ) {
+    suspend fun initializeDriveFolders() {
+        try {
+            val result = driveMediaManager.initializeFolders()
+            if (result == null) {
+                throw Exception("Failed to create or access Google Drive folders. Please check your network and permissions.")
+            }
+        } catch (e: DrivePermissionDeniedException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.e("NotesRepository", "Failed to initialize Drive folders: ${e.message}")
+            throw Exception("Failed to initialize Google Drive: ${e.message ?: "Unknown error"}")
+        }
+    }
+
+    suspend fun uploadMediaAndCache(uri: String): String? {
+        return driveMediaManager.uploadMediaAndCache(uri)
+    }
+
     fun getActiveNotes(): Flow<List<Note>> = noteDao.getActiveNotes()
     fun getArchivedNotes(): Flow<List<Note>> = noteDao.getArchivedNotes()
     fun getReminderNotes(): Flow<List<Note>> = noteDao.getReminderNotes()
     fun getNotesCount(): Flow<Int> = noteDao.getNotesCount()
+
+    suspend fun hasUnsyncedData(): Boolean {
+        return noteDao.getUnsyncedNotesCount() > 0
+    }
 
     suspend fun getNoteById(id: String): Note? = noteDao.getNoteById(id)
 
@@ -98,16 +121,19 @@ class NotesRepository(
                             com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
                                 if (localNote == null) {
                                     // New note from remote
-                                    toInsertOrUpdate.add(remoteNote.copy(isSynced = true))
+                                    val downloadedContent = driveMediaManager.processNoteForDownload(remoteNote.content)
+                                    toInsertOrUpdate.add(remoteNote.copy(content = downloadedContent, isSynced = true))
                                 } else if (!localNote.isSynced) {
                                     // Conflict! Local has pending changes.
                                     // Resolution: Last write wins based on updatedAt
                                     if (remoteNote.updatedAt > localNote.updatedAt) {
-                                        toInsertOrUpdate.add(remoteNote.copy(isSynced = true))
+                                        val downloadedContent = driveMediaManager.processNoteForDownload(remoteNote.content)
+                                        toInsertOrUpdate.add(remoteNote.copy(content = downloadedContent, isSynced = true))
                                     }
                                 } else if (localNote != remoteNote.copy(isSynced = true)) {
                                     // Local is synced, but data differs (e.g. updated from another device)
-                                    toInsertOrUpdate.add(remoteNote.copy(isSynced = true))
+                                    val downloadedContent = driveMediaManager.processNoteForDownload(remoteNote.content)
+                                    toInsertOrUpdate.add(remoteNote.copy(content = downloadedContent, isSynced = true))
                                 }
                             }
                             com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
@@ -133,6 +159,9 @@ class NotesRepository(
                 val remoteTheme = snapshot.getString("themeMode")
                 val remoteFontSize = snapshot.getString("fontSize")
                 val remoteDefaultView = snapshot.getString("defaultView")
+                val remoteDriveRootId = snapshot.getString("driveFolderRootId")
+                val remoteDriveImagesId = snapshot.getString("driveFolderImagesId")
+                val remoteDriveRecordingsId = snapshot.getString("driveFolderRecordingsId")
                 val remoteUpdatedAt = snapshot.getLong("updatedAt") ?: 0L
 
                 val localUpdatedAt = preferencesRepository.lastSyncedTime.value
@@ -140,6 +169,7 @@ class NotesRepository(
                     remoteTheme?.let { preferencesRepository.setThemeMode(it) }
                     remoteFontSize?.let { preferencesRepository.setFontSize(it) }
                     remoteDefaultView?.let { preferencesRepository.setDefaultView(it) }
+                    preferencesRepository.setDriveFolderIds(remoteDriveRootId, remoteDriveImagesId, remoteDriveRecordingsId)
                     preferencesRepository.updateLastSyncedTime(remoteUpdatedAt)
                 }
             }
@@ -154,8 +184,8 @@ class NotesRepository(
         settingsListenerRegistration = null
     }
 
-    suspend fun syncAllNotesWithCloud() = withContext(Dispatchers.IO + NonCancellable) {
-        val user = auth.currentUser ?: return@withContext
+    suspend fun syncAllNotesWithCloud(): Boolean = withContext(Dispatchers.IO + NonCancellable) {
+        val user = auth.currentUser ?: return@withContext false
         try {
             val userNotesRef = firestore.collection("Users").document(user.uid).collection("Notes")
 
@@ -163,13 +193,25 @@ class NotesRepository(
             val unsyncedNotes = noteDao.getUnsyncedNotes()
             if (unsyncedNotes.isNotEmpty()) {
                 val batch = firestore.batch()
+                val successfullySyncedNotes = mutableListOf<Note>()
                 for (note in unsyncedNotes) {
-                    batch.set(userNotesRef.document(note.id), note)
+                    val processedContent = driveMediaManager.processNoteForUpload(note.content)
+                    
+                    // If content still has local files, upload failed, so don't mark as synced and DON'T upload to Firestore
+                    if (!processedContent.contains("\"uri\":\"file://") && !processedContent.contains("\"uri\":\"/")) {
+                        val processedNote = note.copy(content = processedContent)
+                        batch.set(userNotesRef.document(note.id), processedNote)
+                        successfullySyncedNotes.add(note)
+                    } else {
+                        android.util.Log.e("NotesRepository", "Skipping note ${note.id} sync because media upload failed")
+                    }
                 }
-                batch.commit().await()
+                if (successfullySyncedNotes.isNotEmpty()) {
+                    batch.commit().await()
+                }
                 
                 // Only mark as synced if the note hasn't been edited locally during the upload
-                for (note in unsyncedNotes) {
+                for (note in successfullySyncedNotes) {
                     noteDao.markAsSyncedIfUnchanged(note.id, note.updatedAt)
                 }
             }
@@ -182,6 +224,9 @@ class NotesRepository(
                     val remoteTheme = remoteSettingsDoc.getString("themeMode")
                     val remoteFontSize = remoteSettingsDoc.getString("fontSize")
                     val remoteDefaultView = remoteSettingsDoc.getString("defaultView")
+                    val remoteDriveRootId = remoteSettingsDoc.getString("driveFolderRootId")
+                    val remoteDriveImagesId = remoteSettingsDoc.getString("driveFolderImagesId")
+                    val remoteDriveRecordingsId = remoteSettingsDoc.getString("driveFolderRecordingsId")
                     val remoteUpdatedAt = remoteSettingsDoc.getLong("updatedAt") ?: 0L
 
                     val localUpdatedAt = preferencesRepository.lastSyncedTime.value
@@ -189,6 +234,7 @@ class NotesRepository(
                         remoteTheme?.let { preferencesRepository.setThemeMode(it) }
                         remoteFontSize?.let { preferencesRepository.setFontSize(it) }
                         remoteDefaultView?.let { preferencesRepository.setDefaultView(it) }
+                        preferencesRepository.setDriveFolderIds(remoteDriveRootId, remoteDriveImagesId, remoteDriveRecordingsId)
                     }
                 }
 
@@ -196,6 +242,9 @@ class NotesRepository(
                     "themeMode" to preferencesRepository.themeMode.value,
                     "fontSize" to preferencesRepository.fontSize.value,
                     "defaultView" to preferencesRepository.defaultView.value,
+                    "driveFolderRootId" to preferencesRepository.driveFolderRootId.value,
+                    "driveFolderImagesId" to preferencesRepository.driveFolderImagesId.value,
+                    "driveFolderRecordingsId" to preferencesRepository.driveFolderRecordingsId.value,
                     "updatedAt" to System.currentTimeMillis()
                 )
                 settingsRef.set(settingsMap).addOnFailureListener { e ->
@@ -207,24 +256,46 @@ class NotesRepository(
 
             preferencesRepository.updateLastSyncedTime()
             startRealtimeSync()
+            return@withContext true
+        } catch (e: DrivePermissionDeniedException) {
+            android.util.Log.w("NotesRepository", "Drive permission denied during sync. Ignoring until permission granted.")
+            return@withContext false
+        } catch (e: java.net.UnknownHostException) {
+            android.util.Log.w("NotesRepository", "Offline: Sync failed due to network. Will retry later.")
+            return@withContext false
         } catch (e: Exception) {
             android.util.Log.e("NotesRepository", "Sync failed: ${e.message}")
+            return@withContext false
         }
     }
 
     private fun syncNoteToCloud(note: Note) {
         val user = auth.currentUser ?: return
-        firestore.collection("Users").document(user.uid)
-            .collection("Notes").document(note.id)
-            .set(note)
-            .addOnSuccessListener {
-                CoroutineScope(Dispatchers.IO).launch {
-                    noteDao.markAsSyncedIfUnchanged(note.id, note.updatedAt)
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val processedContent = driveMediaManager.processNoteForUpload(note.content)
+                val processedNote = note.copy(content = processedContent)
+                
+                if (!processedContent.contains("\"uri\":\"file://") && !processedContent.contains("\"uri\":\"/")) {
+                    firestore.collection("Users").document(user.uid)
+                        .collection("Notes").document(note.id)
+                        .set(processedNote)
+                        .addOnSuccessListener {
+                            CoroutineScope(Dispatchers.IO).launch {
+                                noteDao.markAsSyncedIfUnchanged(note.id, note.updatedAt)
+                            }
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("NotesRepository", "Failed to sync note to cloud: ${e.message}")
+                        }
+                } else {
+                    android.util.Log.e("NotesRepository", "Skipping syncNoteToCloud for ${note.id} because media upload failed")
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("NotesRepository", "Failed to process media for note: ${e.message}")
             }
-            .addOnFailureListener { e ->
-                android.util.Log.e("NotesRepository", "Failed to sync note to cloud: ${e.message}. If this is a permission error, check your Firestore Security Rules.")
-            }
+        }
     }
 
     suspend fun purgeCorruptedBlankNotes() = withContext(Dispatchers.IO + NonCancellable) {
@@ -262,11 +333,15 @@ class NotesRepository(
             val userNotesRef = firestore.collection("Users").document(user.uid).collection("Notes")
             val remoteSnapshot = userNotesRef.get().await()
             val remoteNotes = remoteSnapshot.documents.mapNotNull { 
-                mapDocumentToNote(it)?.copy(isSynced = true) 
+                mapDocumentToNote(it)
             }
             
             if (remoteNotes.isNotEmpty()) {
-                noteDao.insertNotes(remoteNotes)
+                val processedNotes = remoteNotes.map { note ->
+                    val downloadedContent = driveMediaManager.processNoteForDownload(note.content)
+                    note.copy(content = downloadedContent, isSynced = true)
+                }
+                noteDao.insertNotes(processedNotes)
             }
             recoverSettingsFromCloud()
         } catch (e: Exception) {
@@ -282,6 +357,9 @@ class NotesRepository(
                 "themeMode" to preferencesRepository.themeMode.value,
                 "fontSize" to preferencesRepository.fontSize.value,
                 "defaultView" to preferencesRepository.defaultView.value,
+                "driveFolderRootId" to preferencesRepository.driveFolderRootId.value,
+                "driveFolderImagesId" to preferencesRepository.driveFolderImagesId.value,
+                "driveFolderRecordingsId" to preferencesRepository.driveFolderRecordingsId.value,
                 "updatedAt" to System.currentTimeMillis()
             )
             settingsRef.set(settingsMap).await()
@@ -300,10 +378,14 @@ class NotesRepository(
                 val remoteTheme = remoteSettingsDoc.getString("themeMode")
                 val remoteFontSize = remoteSettingsDoc.getString("fontSize")
                 val remoteDefaultView = remoteSettingsDoc.getString("defaultView")
+                val remoteDriveRootId = remoteSettingsDoc.getString("driveFolderRootId")
+                val remoteDriveImagesId = remoteSettingsDoc.getString("driveFolderImagesId")
+                val remoteDriveRecordingsId = remoteSettingsDoc.getString("driveFolderRecordingsId")
                 
                 remoteTheme?.let { preferencesRepository.setThemeMode(it) }
                 remoteFontSize?.let { preferencesRepository.setFontSize(it) }
                 remoteDefaultView?.let { preferencesRepository.setDefaultView(it) }
+                preferencesRepository.setDriveFolderIds(remoteDriveRootId, remoteDriveImagesId, remoteDriveRecordingsId)
                 preferencesRepository.updateLastSyncedTime()
             }
         } catch (e: Exception) {
@@ -363,6 +445,12 @@ class NotesRepository(
     suspend fun clearAllLocalData() = withContext(Dispatchers.IO + NonCancellable) {
         try {
             noteDao.deleteAllNotes()
+            
+            // Clear locally cached media files to prevent data leak across accounts
+            val mediaDir = java.io.File(context.filesDir, "drive_media")
+            if (mediaDir.exists()) {
+                mediaDir.deleteRecursively()
+            }
         } catch (e: Exception) {
             android.util.Log.e("NotesRepository", "Failed to clear local data: ${e.message}")
         }

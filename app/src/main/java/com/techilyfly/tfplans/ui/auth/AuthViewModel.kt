@@ -4,14 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.util.Patterns
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.CustomCredential
-import androidx.credentials.exceptions.GetCredentialException
-import androidx.credentials.exceptions.NoCredentialException
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.android.gms.common.api.ApiException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -62,72 +55,21 @@ class AuthViewModel(
         }
     }
 
-    fun loginWithGoogle(context: Context) {
+    fun setAuthError(message: String) {
+        _authState.value = AuthState.Error(message)
+    }
+
+    fun handleGoogleIdToken(idToken: String) {
         _authState.value = AuthState.Loading
         viewModelScope.launch {
             try {
-                val credentialManager = CredentialManager.create(context)
-                val rawNonce = UUID.randomUUID().toString()
-                val bytes = MessageDigest.getInstance("SHA-256").digest(rawNonce.toByteArray())
-                val hashedNonce = bytes.fold("") { str, it -> str + "%02x".format(it) }
-
-                val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-                val webClientId = if (resId != 0) {
-                    context.getString(resId)
-                } else {
-                    "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com"
-                }
-
-                val activity = context.findActivity()
-                if (activity == null) {
-                    _authState.value = AuthState.Error("Activity context not found. Cannot launch Google Sign-In.")
-                    return@launch
-                }
-
-                val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(webClientId)
-                    .setNonce(hashedNonce)
-                    .build()
-
-                val request = GetCredentialRequest.Builder()
-                    .addCredentialOption(signInWithGoogleOption)
-                    .build()
-
-                val credentialResponse = credentialManager.getCredential(context = activity, request = request)
-
-                val credential = credentialResponse!!.credential
-
-                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                    val googleIdToken = googleIdTokenCredential.idToken
-                    val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                    auth.signInWithCredential(authCredential).await()
-                    handleSuccessfulLogin()
-                } else {
-                    _authState.value = AuthState.Error("Invalid Google credential format. Please try again.")
-                }
-            } catch (e: NoCredentialException) {
-                _authState.value = AuthState.Error("No Google accounts found on this device.")
-            } catch (e: GetCredentialException) {
-                val msg = e.message ?: ""
-                val type = e.type
-                val userFriendlyMsg = if (e is androidx.credentials.exceptions.GetCredentialCancellationException || msg.contains("GetCredentialCancellationException") || msg.contains("cancelled")) {
-                    "Google Sign-In was cancelled. Tap 'Continue with Google' whenever you want to sign in."
-                } else if (msg.contains("16") || msg.contains("SHA-1")) {
-                    "Google Sign-In is currently unavailable for this app version. Please use email and password to sign in."
-                } else if (msg.contains("no provider dependencies found") || msg.contains("GetCredentialUnsupportedException")) {
-                    "Google Sign-In is not supported on this device. Please use email and password."
-                } else {
-                    "Google Sign-In failed. Please try again or use email and password."
-                }
-                _authState.value = AuthState.Error(userFriendlyMsg)
+                val authCredential = GoogleAuthProvider.getCredential(idToken, null)
+                auth.signInWithCredential(authCredential).await()
+                handleSuccessfulLogin()
             } catch (e: Exception) {
                 val msg = e.message ?: ""
-                val userFriendlyMsg = if (e is java.util.concurrent.CancellationException || msg.contains("cancelled")) {
-                     "Google Sign-In was cancelled. Tap 'Continue with Google' whenever you want to sign in."
-                } else if (msg.contains("28444") || msg.contains("Developer console") || msg.contains("one tap") || msg.contains("16")) {
-                    "Google Sign-In is currently unavailable for this app version. Please use email and password to sign in."
-                } else if (msg.contains("no provider dependencies found") || msg.contains("Unsupported")) {
-                    "Google Sign-In is not supported on this device. Please use email and password."
+                val userFriendlyMsg = if (msg.contains("network") || msg.contains("timeout") || msg.contains("Unable to resolve host")) {
+                    "A network error occurred. Please check your internet connection."
                 } else {
                     "Authentication failure. Please try again or use email and password."
                 }
@@ -184,6 +126,17 @@ class AuthViewModel(
     private suspend fun handleSuccessfulLogin() {
         preferencesRepository.setCloudBackup(true)
         repository.startRealtimeSync()
+        
+        // Initialize Google Drive folders right after login
+        try {
+            repository.initializeDriveFolders()
+        } catch (e: com.techilyfly.tfplans.data.DrivePermissionDeniedException) {
+            // User denied Drive permission during sign in. 
+            // We proceed anyway, but media sync won't work until they grant it.
+        } catch (e: Exception) {
+            // Other initialization error
+        }
+        
         try {
             repository.syncAllNotesWithCloud()
         } catch (e: Exception) {

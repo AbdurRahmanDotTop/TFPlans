@@ -286,6 +286,10 @@ class EditNoteViewModel(
         }
     }
 
+    suspend fun uploadMediaAndCache(uri: String): String? {
+        return repository.uploadMediaAndCache(uri)
+    }
+
     // Kept for backward compatibility with the current UI button
     fun summarizeWithGemini() {
         performAiAction(AiAction.SUMMARIZE)

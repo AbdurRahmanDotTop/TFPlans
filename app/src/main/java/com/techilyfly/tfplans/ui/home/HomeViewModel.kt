@@ -80,9 +80,26 @@ class HomeViewModel(
         return auth.currentUser?.email ?: ""
     }
 
-    fun logout(context: Context, onComplete: () -> Unit) {
-        repository.stopRealtimeSync()
+    fun logout(context: Context, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
+            if (repository.hasUnsyncedData()) {
+                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false, "You have unsynced data. Please connect to the internet to sync your data before signing out to prevent data loss.")
+                    }
+                    return@launch
+                }
+                
+                val syncSuccess = repository.syncAllNotesWithCloud()
+                if (!syncSuccess) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false, "Failed to sync pending data. Please try again.")
+                    }
+                    return@launch
+                }
+            }
+            
+            repository.stopRealtimeSync()
             repository.clearAllLocalData()
             preferencesRepository.clearPreferences()
             try {
@@ -91,7 +108,7 @@ class HomeViewModel(
             } catch (e: Exception) {}
             auth.signOut()
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onComplete()
+                onResult(true, null)
             }
         }
     }

@@ -1,7 +1,9 @@
+@file:Suppress("DEPRECATION", "DiscouragedApi")
+
 package com.techilyfly.tfplans.ui.profile
 
 import android.content.Intent
-import android.net.Uri
+import androidx.core.net.toUri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -22,6 +24,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.Scope
+
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -30,7 +38,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.techilyfly.tfplans.BuildConfig
 import com.techilyfly.tfplans.ui.settings.InAppBrowserScreen
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -51,17 +58,27 @@ fun ProfileScreen(
     val lastSyncedTime by viewModel.lastSyncedTime.collectAsState()
     val notesCount by viewModel.notesCount.collectAsState()
 
+    val driveFolderRootId by viewModel.driveFolderRootId.collectAsState()
+    val driveFolderImagesId by viewModel.driveFolderImagesId.collectAsState()
+    val driveFolderRecordingsId by viewModel.driveFolderRecordingsId.collectAsState()
+
     var showTermsDialog by remember { mutableStateOf(false) }
     var showPrivacyDialog by remember { mutableStateOf(false) }
-    var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var showRateAppDialog by remember { mutableStateOf(false) }
     var browserUrl by remember { mutableStateOf<String?>(null) }
+    var showErrorDialog by remember { mutableStateOf<String?>(null) }
     
     // Dialog states for Profile Management
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var showReAuthDialog by remember { mutableStateOf(false) }
+    var showNoInternetDialog by remember { mutableStateOf(false) }
+    var showForceLogoutDialog by remember { mutableStateOf(false) }
+    var showForceDeleteDialog by remember { mutableStateOf(false) }
+    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var isLoggingOut by remember { mutableStateOf(false) }
+    
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
-    var showReAuthDialog by remember { mutableStateOf(false) }
-    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     if (browserUrl != null) {
         InAppBrowserScreen(
@@ -70,14 +87,29 @@ fun ProfileScreen(
         )
     }
 
-    val PrimaryColor = MaterialTheme.colorScheme.primary
-    val SecondaryColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val SurfaceColor = MaterialTheme.colorScheme.surface
-    val ErrorColor = MaterialTheme.colorScheme.error
+    var hasDrivePermission by remember { mutableStateOf(viewModel.checkDrivePermission(context)) }
+    
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        hasDrivePermission = viewModel.checkDrivePermission(context)
+        if (hasDrivePermission) {
+            Toast.makeText(context, "Google Drive permission granted!", Toast.LENGTH_SHORT).show()
+            viewModel.initializeDrive { _, msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(context, "Google Drive permission denied.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val errorColor = MaterialTheme.colorScheme.error
 
     val networkObserver = remember { com.techilyfly.tfplans.util.NetworkConnectivityObserver(context) }
     val isOnline by networkObserver.isOnline.collectAsState(initial = com.techilyfly.tfplans.ui.auth.isOnline(context))
-    var showNoInternetDialog by remember { mutableStateOf(false) }
 
     if (showNoInternetDialog) {
         com.techilyfly.tfplans.ui.components.InternetRequiredDialog(
@@ -86,12 +118,14 @@ fun ProfileScreen(
         )
     }
 
+    val locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
+
     val creationDate = currentUser?.metadata?.creationTimestamp?.let {
-        SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(it))
+        SimpleDateFormat("MMM dd, yyyy", locale).format(Date(it))
     } ?: "Unknown"
 
     val lastSyncString = if (lastSyncedTime > 0) {
-        SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(lastSyncedTime))
+        SimpleDateFormat("MMM dd, HH:mm", locale).format(Date(lastSyncedTime))
     } else {
         "Never"
     }
@@ -123,8 +157,8 @@ fun ProfileScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = PrimaryColor,
-                    navigationIconContentColor = PrimaryColor
+                    titleContentColor = primaryColor,
+                    navigationIconContentColor = primaryColor
                 )
             )
         },
@@ -145,7 +179,6 @@ fun ProfileScreen(
         ) {
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                // Header section
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -165,7 +198,7 @@ fun ProfileScreen(
                                 onClick = { showEditProfileDialog = true },
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .background(PrimaryColor, CircleShape)
+                                    .background(primaryColor, CircleShape)
                                     .size(32.dp)
                             ) {
                                 Icon(Icons.Filled.Edit, contentDescription = "Edit Profile", tint = Color.White, modifier = Modifier.size(16.dp))
@@ -182,7 +215,7 @@ fun ProfileScreen(
                     Text(
                         text = currentUser?.email ?: "",
                         style = MaterialTheme.typography.bodyLarge,
-                        color = SecondaryColor
+                        color = secondaryColor
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     
@@ -191,23 +224,23 @@ fun ProfileScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
-                            color = PrimaryColor.copy(alpha = 0.1f),
+                            color = primaryColor.copy(alpha = 0.1f),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             ) {
-                                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = PrimaryColor, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = primaryColor, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Active Account", color = PrimaryColor, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                Text("Active Account", color = primaryColor, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
                         
                         if (isEmailProvider && !isEmailVerified) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Surface(
-                                color = ErrorColor.copy(alpha = 0.1f),
+                                color = errorColor.copy(alpha = 0.1f),
                                 shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier.clickable {
                                     if (isOnline) {
@@ -223,9 +256,9 @@ fun ProfileScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
-                                    Icon(Icons.Filled.Warning, contentDescription = null, tint = ErrorColor, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Filled.Warning, contentDescription = null, tint = errorColor, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Verify Email", color = ErrorColor, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                    Text("Verify Email", color = errorColor, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -234,16 +267,15 @@ fun ProfileScreen(
             }
 
             item {
-                // Account Stats
                 Text(
                     text = "ACCOUNT INFO",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                    color = SecondaryColor,
+                    color = secondaryColor,
                     modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
                 )
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = SurfaceColor,
+                    color = surfaceColor,
                     shadowElevation = 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -257,16 +289,92 @@ fun ProfileScreen(
             }
 
             item {
-                // Actions
                 Text(
-                    text = "ACTIONS",
+                    text = "GOOGLE DRIVE BACKUP",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                    color = SecondaryColor,
+                    color = secondaryColor,
                     modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
                 )
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = SurfaceColor,
+                    color = surfaceColor,
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        if (isGoogleProvider) {
+                            if (hasDrivePermission) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Icon(Icons.Filled.CloudDone, contentDescription = null, tint = primaryColor)
+                                    Text("Connected to Google Drive", style = MaterialTheme.typography.bodyLarge, color = primaryColor, fontWeight = FontWeight.SemiBold)
+                                }
+                                ProfileStatRow(icon = Icons.Filled.Folder, label = "TF Plans Folder", value = if (driveFolderRootId != null) "Created" else "Missing")
+                                ProfileStatRow(icon = Icons.Filled.Image, label = "Images Backup", value = if (driveFolderImagesId != null) "Active" else "Missing")
+                                ProfileStatRow(icon = Icons.Filled.Mic, label = "Audio Backup", value = if (driveFolderRecordingsId != null) "Active" else "Missing")
+                                
+                                if (driveFolderRootId == null || driveFolderImagesId == null || driveFolderRecordingsId == null) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.initializeDrive { _, msg ->
+                                                showErrorDialog = msg
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+                                    ) {
+                                        Text("Initialize Backup Folders")
+                                    }
+                                }
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Icon(Icons.Filled.CloudOff, contentDescription = null, tint = errorColor)
+                                    Text("Google Drive Not Connected", style = MaterialTheme.typography.bodyLarge, color = errorColor, fontWeight = FontWeight.SemiBold)
+                                }
+                                Text("Connect to automatically back up your images and audio recordings.", style = MaterialTheme.typography.bodyMedium, color = secondaryColor)
+                                Button(
+                                    onClick = {
+                                        if (isOnline) {
+                                            val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                                            val webClientId = if (resId != 0) context.getString(resId) else "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com"
+                                            @Suppress("DEPRECATION")
+                                            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                                                .requestIdToken(webClientId)
+                                                .requestEmail()
+                                                .requestScopes(Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                                                .build()
+                                            @Suppress("DEPRECATION")
+                                            val googleSignInClient = GoogleSignIn.getClient(context, gso)
+                                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                        } else {
+                                            showNoInternetDialog = true
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+                                ) {
+                                    Text("Connect Google Drive")
+                                }
+                            }
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Filled.Warning, contentDescription = null, tint = secondaryColor)
+                                Text("Sign in with Google to enable media backups", style = MaterialTheme.typography.bodyMedium, color = secondaryColor)
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    text = "ACTIONS",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+                    color = secondaryColor,
+                    modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
+                )
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = surfaceColor,
                     shadowElevation = 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -274,7 +382,7 @@ fun ProfileScreen(
                         if (isGoogleProvider) {
                             ProfileSettingItem(icon = Icons.Filled.ManageAccounts, title = "Manage Google Account") {
                                 if (isOnline) {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://myaccount.google.com/"))
+                                    val intent = Intent(Intent.ACTION_VIEW, "https://myaccount.google.com/".toUri())
                                     context.startActivity(intent)
                                 } else {
                                     showNoInternetDialog = true
@@ -320,29 +428,28 @@ fun ProfileScreen(
             }
 
             item {
-                // Legal & Support
                 Text(
                     text = "LEGAL & SUPPORT",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                    color = SecondaryColor,
+                    color = secondaryColor,
                     modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
                 )
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = SurfaceColor,
+                    color = surfaceColor,
                     shadowElevation = 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column {
                         ProfileSettingItem(icon = Icons.AutoMirrored.Filled.Help, title = "Help & Support") {
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                data = Uri.parse("mailto:")
+                                data = "mailto:".toUri()
                                 putExtra(Intent.EXTRA_EMAIL, arrayOf("support@techilyfly.com"))
                                 putExtra(Intent.EXTRA_SUBJECT, "TF Plans Support Request")
                             }
                             try {
                                 context.startActivity(intent)
-                            } catch (e: Exception) {
+                            } catch (_: Exception) {
                                 Toast.makeText(context, "No email app found", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -359,21 +466,25 @@ fun ProfileScreen(
                             showTermsDialog = true
                         }
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
-                        ProfileSettingItem(icon = Icons.Filled.Info, title = "App Version", subtitle = BuildConfig.VERSION_NAME) {}
+                        val versionName = try {
+                            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                        } catch (e: Exception) {
+                            "Unknown"
+                        }
+                        ProfileSettingItem(icon = Icons.Filled.Info, title = "App Version", subtitle = versionName) {}
                     }
                 }
             }
             item {
-                // Developer
                 Text(
                     text = "DEVELOPER",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                    color = SecondaryColor,
+                    color = secondaryColor,
                     modifier = Modifier.padding(bottom = 8.dp, start = 4.dp, top = 24.dp)
                 )
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = SurfaceColor,
+                    color = surfaceColor,
                     shadowElevation = 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -390,31 +501,36 @@ fun ProfileScreen(
             }
 
             item {
-                // Danger Zone
                 Text(
                     text = "DANGER ZONE",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                    color = ErrorColor,
+                    color = errorColor,
                     modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
                 )
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = ErrorColor.copy(alpha = 0.05f),
-                    border = BorderStroke(1.dp, ErrorColor.copy(alpha = 0.2f)),
+                    color = errorColor.copy(alpha = 0.05f),
+                    border = BorderStroke(1.dp, errorColor.copy(alpha = 0.2f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column {
-                        ProfileSettingItem(icon = Icons.AutoMirrored.Filled.Logout, title = "Sign Out", tint = ErrorColor) {
-                            if (isOnline) {
-                                viewModel.logout(context) {
-                                    onNavigateToAuth()
+                        ProfileSettingItem(icon = Icons.AutoMirrored.Filled.Logout, title = if (isLoggingOut) "Signing Out..." else "Sign Out", tint = errorColor) {
+                            if (!isLoggingOut) {
+                                isLoggingOut = true
+                                viewModel.logout(context, force = false) { success, msg, requiresForceConfirm ->
+                                    isLoggingOut = false
+                                    if (success) {
+                                        onNavigateToAuth()
+                                    } else if (requiresForceConfirm) {
+                                        showForceLogoutDialog = true
+                                    } else if (msg != null) {
+                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                    }
                                 }
-                            } else {
-                                showNoInternetDialog = true
                             }
                         }
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = ErrorColor.copy(alpha = 0.1f))
-                        ProfileSettingItem(icon = Icons.Filled.DeleteForever, title = "Delete Account", tint = ErrorColor) {
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = errorColor.copy(alpha = 0.1f))
+                        ProfileSettingItem(icon = Icons.Filled.DeleteForever, title = "Delete Account", tint = errorColor) {
                             showDeleteAccountDialog = true
                         }
                     }
@@ -424,7 +540,19 @@ fun ProfileScreen(
         }
     }
     
-    // Dialogs implementations
+    if (showErrorDialog != null) {
+        AlertDialog(
+            onDismissRequest = { showErrorDialog = null },
+            title = { Text("Information", fontWeight = FontWeight.Bold, color = primaryColor) },
+            text = { Text(showErrorDialog!!, style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = { showErrorDialog = null }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+    
     if (showEditProfileDialog) {
         var name by remember { mutableStateOf(currentUser?.displayName ?: "") }
         var photoUrl by remember { mutableStateOf(currentUser?.photoUrl?.toString() ?: "") }
@@ -432,7 +560,7 @@ fun ProfileScreen(
         
         AlertDialog(
             onDismissRequest = { if (!isSaving) showEditProfileDialog = false },
-            title = { Text("Edit Profile", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Edit Profile", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = { 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -481,7 +609,7 @@ fun ProfileScreen(
         
         AlertDialog(
             onDismissRequest = { if (!isSaving) showChangePasswordDialog = false },
-            title = { Text("Change Password", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Change Password", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = { 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -554,7 +682,7 @@ fun ProfileScreen(
                     pendingAction = null
                 }
             },
-            title = { Text("Re-authenticate", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Re-authenticate", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = { 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("For your security, please re-enter your password to continue this action.", style = MaterialTheme.typography.bodyMedium)
@@ -608,10 +736,82 @@ fun ProfileScreen(
         )
     }
 
+    if (showForceLogoutDialog) {
+        var isForcingLogout by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!isForcingLogout) showForceLogoutDialog = false },
+            title = { Text("Warning: Unsynced Data", fontWeight = FontWeight.Bold, color = errorColor) },
+            text = { Text("You have unsynced notes. If you sign out now, this offline data will be permanently lost. Do you want to proceed?", color = secondaryColor) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isForcingLogout = true
+                        viewModel.logout(context, force = true) { success, msg, _ ->
+                            isForcingLogout = false
+                            showForceLogoutDialog = false
+                            if (success) {
+                                onNavigateToAuth()
+                            } else if (msg != null) {
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }, 
+                    colors = ButtonDefaults.buttonColors(containerColor = errorColor),
+                    enabled = !isForcingLogout
+                ) {
+                    if (isForcingLogout) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                    else Text("Proceed Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!isForcingLogout) showForceLogoutDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showForceDeleteDialog) {
+        var isForcingDelete by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!isForcingDelete) showForceDeleteDialog = false },
+            title = { Text("Warning: Unsynced Data", fontWeight = FontWeight.Bold, color = errorColor) },
+            text = { Text("You have unsynced notes. If you delete your account now, this offline data will be permanently lost along with everything else. Do you want to proceed?", color = secondaryColor) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isForcingDelete = true
+                        viewModel.deleteAccount(context, force = true) { success, msg, _ ->
+                            isForcingDelete = false
+                            showForceDeleteDialog = false
+                            if (success) {
+                                onNavigateToAuth()
+                            } else if (msg == "REAUTH_REQUIRED") {
+                                showReAuthDialog = true
+                            } else {
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }, 
+                    colors = ButtonDefaults.buttonColors(containerColor = errorColor),
+                    enabled = !isForcingDelete
+                ) {
+                    if (isForcingDelete) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                    else Text("Proceed Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!isForcingDelete) showForceDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     if (showTermsDialog) {
         AlertDialog(
             onDismissRequest = { showTermsDialog = false },
-            title = { Text("Terms of Service", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Terms of Service", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = { Text("By using TF Plans, you agree to our terms of service. Do not use the app for any illegal activities. We reserve the right to modify these terms at any time.") },
             confirmButton = {
                 TextButton(onClick = { showTermsDialog = false }) {
@@ -624,7 +824,7 @@ fun ProfileScreen(
     if (showPrivacyDialog) {
         AlertDialog(
             onDismissRequest = { showPrivacyDialog = false },
-            title = { Text("Privacy Policy", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Privacy Policy", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = { Text("TF Plans respects user privacy. Note contents are stored locally on device storage via Room SQLite and synced to Firebase Firestore if logged in. No third-party data tracking is performed.") },
             confirmButton = {
                 TextButton(onClick = { showPrivacyDialog = false }) {
@@ -637,7 +837,7 @@ fun ProfileScreen(
     if (showRateAppDialog) {
         AlertDialog(
             onDismissRequest = { showRateAppDialog = false },
-            title = { Text("Rate on App Store", fontWeight = FontWeight.Bold, color = PrimaryColor) },
+            title = { Text("Rate on App Store", fontWeight = FontWeight.Bold, color = primaryColor) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Choose an App Store to rate us:", style = MaterialTheme.typography.bodyMedium)
@@ -646,13 +846,13 @@ fun ProfileScreen(
                         onClick = {
                             showRateAppDialog = false
                             try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${context.packageName}")))
-                            } catch (e: Exception) {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${context.packageName}")))
+                                context.startActivity(Intent(Intent.ACTION_VIEW, "market://details?id=${context.packageName}".toUri()))
+                            } catch (_: Exception) {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, "https://play.google.com/store/apps/details?id=${context.packageName}".toUri()))
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor)
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
                     ) {
                         Text("Google Play Store")
                     }
@@ -660,13 +860,13 @@ fun ProfileScreen(
                         onClick = {
                             showRateAppDialog = false
                             try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("amzn://apps/android?p=${context.packageName}")))
-                            } catch (e: Exception) {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.amazon.com/gp/mas/dl/android?p=${context.packageName}")))
+                                context.startActivity(Intent(Intent.ACTION_VIEW, "amzn://apps/android?p=${context.packageName}".toUri()))
+                            } catch (_: Exception) {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, "https://www.amazon.com/gp/mas/dl/android?p=${context.packageName}".toUri()))
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor.copy(alpha = 0.8f))
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor.copy(alpha = 0.8f))
                     ) {
                         Text("Amazon Appstore")
                     }
@@ -674,19 +874,19 @@ fun ProfileScreen(
                         onClick = {
                             showRateAppDialog = false
                             try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("indus://details?id=${context.packageName}"))
+                                val intent = Intent(Intent.ACTION_VIEW, "indus://details?id=${context.packageName}".toUri())
                                 context.startActivity(intent)
-                            } catch (e: Exception) {
+                            } catch (_: Exception) {
                                 try {
-                                    val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${context.packageName}"))
+                                    val fallback = Intent(Intent.ACTION_VIEW, "market://details?id=${context.packageName}".toUri())
                                     context.startActivity(fallback)
-                                } catch (e2: Exception) {
+                                } catch (_: Exception) {
                                     Toast.makeText(context, "App Store not found", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor.copy(alpha = 0.6f))
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor.copy(alpha = 0.6f))
                     ) {
                         Text("Indus AppStore")
                     }
@@ -704,40 +904,34 @@ fun ProfileScreen(
         var isDeleting by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { if (!isDeleting) showDeleteAccountDialog = false },
-            title = { Text("Delete Account", color = ErrorColor, fontWeight = FontWeight.Bold) },
-            text = { Text("Are you sure you want to delete your account? This action is irreversible and will permanently delete all your cloud data, settings, and local notes.") },
+            title = { Text("Delete Account", fontWeight = FontWeight.Bold, color = errorColor) },
+            text = { Text("Are you sure you want to delete your account? This action cannot be undone. All your notes and settings will be permanently removed.", color = secondaryColor) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (isOnline) {
-                            isDeleting = true
-                            viewModel.deleteAccount(context) { success, msg ->
-                                isDeleting = false
-                                if (success) {
-                                    showDeleteAccountDialog = false
-                                    onNavigateToAuth()
-                                } else if (msg == "REAUTH_REQUIRED") {
-                                    showDeleteAccountDialog = false
-                                    pendingAction = { showDeleteAccountDialog = true }
-                                    showReAuthDialog = true
-                                } else {
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                }
-                            }
+                Button(onClick = {
+                    isDeleting = true
+                    viewModel.deleteAccount(context, force = false) { success, msg, requiresForceConfirm ->
+                        isDeleting = false
+                        if (success) {
+                            showDeleteAccountDialog = false
+                            onNavigateToAuth()
+                        } else if (requiresForceConfirm) {
+                            showDeleteAccountDialog = false
+                            showForceDeleteDialog = true
+                        } else if (msg == "REAUTH_REQUIRED") {
+                            showDeleteAccountDialog = false
+                            showReAuthDialog = true
                         } else {
-                            showNoInternetDialog = true
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ErrorColor),
-                    enabled = !isDeleting
-                ) {
+                    }
+                }, colors = ButtonDefaults.buttonColors(containerColor = errorColor), enabled = !isDeleting) {
                     if (isDeleting) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    else Text("Delete Permanently")
+                    else Text("Delete")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { if (!isDeleting) showDeleteAccountDialog = false }) {
-                    Text("Cancel", color = SecondaryColor)
+                    Text("Cancel", color = secondaryColor)
                 }
             }
         )

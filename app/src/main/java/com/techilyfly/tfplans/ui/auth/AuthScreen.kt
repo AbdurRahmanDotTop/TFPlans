@@ -1,3 +1,4 @@
+@file:Suppress("DEPRECATION")
 package com.techilyfly.tfplans.ui.auth
 
 import android.app.Activity
@@ -15,6 +16,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
 import com.techilyfly.tfplans.ui.theme.*
 import com.techilyfly.tfplans.ui.components.AdBanner
 import com.techilyfly.tfplans.ui.components.AdManager
@@ -30,6 +37,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.AnimatedVisibility
 
@@ -62,6 +70,23 @@ fun AuthScreen(
 
     val networkObserver = remember { com.techilyfly.tfplans.util.NetworkConnectivityObserver(context) }
     val isOnline by networkObserver.isOnline.collectAsState(initial = isOnline(context))
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(ApiException::class.java)
+                account.idToken?.let { viewModel.handleGoogleIdToken(it) }
+            } catch (e: ApiException) {
+                val msg = e.message ?: ""
+                if (e.statusCode == com.google.android.gms.common.api.CommonStatusCodes.CANCELED || msg.contains("12501")) {
+                     // user canceled, ignore
+                } else {
+                     viewModel.setAuthError("Google Sign-In failed.")
+                }
+            }
+        }
+    }
 
     var showExitDialog by remember { mutableStateOf(false) }
 
@@ -353,11 +378,36 @@ fun AuthScreen(
                             HorizontalDivider(modifier = Modifier.weight(1f), color = SecondaryColor.copy(alpha = 0.3f))
                         }
                         
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            color = PrimaryColor.copy(alpha = 0.1f),
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.Image, contentDescription = null, tint = PrimaryColor, modifier = Modifier.size(24.dp).padding(end = 8.dp))
+                                Text(
+                                    text = "Want to sync images and audio across devices? Please continue with Google Sign-in to automatically back them up to your personal Google Drive.",
+                                    color = SecondaryColor,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        
                         OutlinedButton(
                             onClick = {
                                 if (isOnline) {
                                     AdManager.incrementActivity(context)
-                                    viewModel.loginWithGoogle(context)
+                                    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                                    val webClientId = if (resId != 0) context.getString(resId) else "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com"
+                                    
+                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                                        .requestIdToken(webClientId)
+                                        .requestEmail()
+                                        .requestScopes(Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                                        .build()
+                                    val googleSignInClient = GoogleSignIn.getClient(context, gso)
+                                    googleSignInLauncher.launch(googleSignInClient.signInIntent)
                                 }
                             },
                             modifier = Modifier

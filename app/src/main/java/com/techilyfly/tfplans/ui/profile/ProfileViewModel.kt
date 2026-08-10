@@ -45,6 +45,10 @@ class ProfileViewModel(
     val cloudBackup: StateFlow<Boolean> = preferencesRepository.cloudBackup
     val lastSyncedTime: StateFlow<Long> = preferencesRepository.lastSyncedTime
 
+    val driveFolderRootId: StateFlow<String?> = preferencesRepository.driveFolderRootId
+    val driveFolderImagesId: StateFlow<String?> = preferencesRepository.driveFolderImagesId
+    val driveFolderRecordingsId: StateFlow<String?> = preferencesRepository.driveFolderRecordingsId
+
     val notesCount: StateFlow<Int> = repository.getNotesCount()
         .stateIn(
             scope = viewModelScope,
@@ -58,6 +62,27 @@ class ProfileViewModel(
                 repository.syncAllNotesWithCloud()
             } catch (_: Exception) {}
             onComplete()
+        }
+    }
+
+    fun checkDrivePermission(context: Context): Boolean {
+        val account = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+        return account != null && com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions(
+            account, 
+            com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE)
+        )
+    }
+
+    fun initializeDrive(onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                repository.initializeDriveFolders()
+                onResult(true, "Google Drive folders initialized successfully")
+            } catch (e: com.techilyfly.tfplans.data.DrivePermissionDeniedException) {
+                onResult(false, "Google Drive permission not granted")
+            } catch (e: Exception) {
+                onResult(false, e.message ?: "Failed to initialize Drive")
+            }
         }
     }
 
@@ -162,38 +187,81 @@ class ProfileViewModel(
         }
     }
 
-    fun logout(context: Context, onComplete: () -> Unit) {
-        repository.stopRealtimeSync()
+    fun logout(context: Context, force: Boolean = false, onResult: (Boolean, String?, Boolean) -> Unit) {
         viewModelScope.launch {
+            if (!force && repository.hasUnsyncedData()) {
+                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false, "You have unsynced data. Please connect to the internet to sync your data before signing out to prevent data loss.", true)
+                    }
+                    return@launch
+                }
+                
+                val syncSuccess = repository.syncAllNotesWithCloud()
+                if (!syncSuccess) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false, "Failed to sync pending data. Please try again.", true)
+                    }
+                    return@launch
+                }
+            }
+            
+            repository.stopRealtimeSync()
             repository.clearAllLocalData()
             preferencesRepository.clearPreferences()
             try {
                 val credentialManager = CredentialManager.create(context)
                 credentialManager.clearCredentialState(ClearCredentialStateRequest())
             } catch (e: Exception) {}
+            
+            try {
+                @Suppress("DEPRECATION")
+                val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                @Suppress("DEPRECATION")
+                val googleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
+                googleSignInClient.signOut()
+            } catch (e: Exception) {}
+            
             auth.signOut()
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onComplete()
+                onResult(true, null, false)
             }
         }
     }
 
-    fun deleteAccount(context: Context, onResult: (Boolean, String) -> Unit) {
+    fun deleteAccount(context: Context, force: Boolean = false, onResult: (Boolean, String, Boolean) -> Unit) {
         val user = auth.currentUser
         if (user == null) {
-            onResult(false, "User not found")
+            onResult(false, "User not found", false)
             return
         }
         
-        repository.stopRealtimeSync()
         viewModelScope.launch {
+            if (!force && repository.hasUnsyncedData()) {
+                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                    onResult(false, "You have unsynced data. Please connect to the internet to sync your data before deleting your account to prevent data loss.", true)
+                    return@launch
+                }
+                val syncSuccess = repository.syncAllNotesWithCloud()
+                if (!syncSuccess) {
+                    onResult(false, "Failed to sync pending data. Please try again.", true)
+                    return@launch
+                }
+            } else if (!force) {
+                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                    onResult(false, "An active internet connection is required to delete your account.", false)
+                    return@launch
+                }
+            }
+            
+            repository.stopRealtimeSync()
             try {
                 // We should technically delete cloud data first, but if delete() fails we don't want to lose data yet.
                 // However, doing this securely requires a Cloud Function. We'll attempt client-side delete.
+                repository.deleteAllCloudData() // This might fail since they are unauthenticated now, but we try.
                 user.delete().await()
                 
                 // If we reach here, user is deleted from Auth successfully
-                repository.deleteAllCloudData() // This might fail since they are unauthenticated now, but we try.
                 repository.clearAllLocalData()
                 preferencesRepository.clearPreferences()
                 
@@ -203,13 +271,14 @@ class ProfileViewModel(
                 } catch (e: Exception) {}
                 
                 auth.signOut()
-                onResult(true, "Account deleted successfully")
+                onResult(true, "Account deleted successfully", false)
             } catch (e: FirebaseAuthRecentLoginRequiredException) {
-                onResult(false, "REAUTH_REQUIRED")
+                repository.startRealtimeSync() // Restore sync if failed
+                onResult(false, "REAUTH_REQUIRED", false)
             } catch (e: Exception) {
                 // If delete fails, restore sync and report error
                 repository.startRealtimeSync()
-                onResult(false, e.message ?: "Failed to delete account")
+                onResult(false, e.message ?: "Failed to delete account", false)
             }
         }
     }

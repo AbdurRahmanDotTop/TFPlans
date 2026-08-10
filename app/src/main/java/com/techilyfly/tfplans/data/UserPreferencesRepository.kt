@@ -26,6 +26,15 @@ class UserPreferencesRepository(context: Context) {
     private val _lastSyncedTime = MutableStateFlow(getSavedLastSyncedTime())
     val lastSyncedTime: StateFlow<Long> = _lastSyncedTime.asStateFlow()
 
+    private val _driveFolderRootId = MutableStateFlow(getSavedDriveFolderRootId())
+    val driveFolderRootId: StateFlow<String?> = _driveFolderRootId.asStateFlow()
+
+    private val _driveFolderImagesId = MutableStateFlow(getSavedDriveFolderImagesId())
+    val driveFolderImagesId: StateFlow<String?> = _driveFolderImagesId.asStateFlow()
+
+    private val _driveFolderRecordingsId = MutableStateFlow(getSavedDriveFolderRecordingsId())
+    val driveFolderRecordingsId: StateFlow<String?> = _driveFolderRecordingsId.asStateFlow()
+
     private fun getSavedThemeMode(): String = prefs.getString("theme_mode", "system") ?: "system"
     private fun getSavedFontSize(): String = prefs.getString("font_size", "medium") ?: "medium"
     private fun getSavedDefaultView(): String = prefs.getString("default_view", "grid") ?: "grid"
@@ -38,6 +47,9 @@ class UserPreferencesRepository(context: Context) {
         return prefs.getBoolean("cloud_backup", isLoggedIn)
     }
     private fun getSavedLastSyncedTime(): Long = prefs.getLong("last_synced_time", 0L)
+    private fun getSavedDriveFolderRootId(): String? = prefs.getString("drive_folder_root_id", null)
+    private fun getSavedDriveFolderImagesId(): String? = prefs.getString("drive_folder_images_id", null)
+    private fun getSavedDriveFolderRecordingsId(): String? = prefs.getString("drive_folder_recordings_id", null)
 
     fun setThemeMode(mode: String) {
         prefs.edit().putString("theme_mode", mode).apply()
@@ -64,6 +76,17 @@ class UserPreferencesRepository(context: Context) {
         _lastSyncedTime.value = time
     }
 
+    fun setDriveFolderIds(rootId: String?, imagesId: String?, recordingsId: String?) {
+        val editor = prefs.edit()
+        editor.putString("drive_folder_root_id", rootId)
+        editor.putString("drive_folder_images_id", imagesId)
+        editor.putString("drive_folder_recordings_id", recordingsId)
+        editor.apply()
+        _driveFolderRootId.value = rootId
+        _driveFolderImagesId.value = imagesId
+        _driveFolderRecordingsId.value = recordingsId
+    }
+
     suspend fun clearPreferences() {
         prefs.edit().clear().apply()
         _themeMode.value = "system"
@@ -71,5 +94,8 @@ class UserPreferencesRepository(context: Context) {
         _defaultView.value = "grid"
         _cloudBackup.value = false
         _lastSyncedTime.value = 0L
+        _driveFolderRootId.value = null
+        _driveFolderImagesId.value = null
+        _driveFolderRecordingsId.value = null
     }
 }

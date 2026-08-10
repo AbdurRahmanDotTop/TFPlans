@@ -17,7 +17,7 @@ android {
   defaultConfig {
     applicationId = "com.techilyfly.tfplans"
     minSdk = 24
-    targetSdk = 37
+    targetSdk = 35
     versionCode = 12
     versionName = "1.2.0"
     multiDexEnabled = true
@@ -48,9 +48,9 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      optimization {
-        enable = true
-      }
+      isMinifyEnabled = true
+      isShrinkResources = true
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
       ndk {
         debugSymbolLevel = "FULL"
@@ -64,6 +64,12 @@ android {
   buildFeatures {
     compose = true
     buildConfig = true
+  }
+  packaging {
+    resources {
+      excludes += "META-INF/INDEX.LIST"
+      excludes += "META-INF/DEPENDENCIES"
+    }
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }
@@ -127,6 +133,10 @@ dependencies {
   implementation(libs.play.services.ads)
   implementation(libs.google.ump)
   implementation(libs.androidx.work.runtime.ktx)
+  implementation(libs.google.api.client.android)
+  implementation(libs.google.api.services.drive)
+  implementation(libs.google.auth.oauth2.http)
+  implementation(libs.play.services.auth)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -145,5 +155,5 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
-  implementation("androidx.browser:browser:1.8.0")
+  implementation(libs.androidx.browser)
 }

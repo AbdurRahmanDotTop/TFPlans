@@ -14,6 +14,7 @@ interface AppContainer {
     val firestore: FirebaseFirestore
     val notesRepository: com.techilyfly.tfplans.data.NotesRepository
     val userPreferencesRepository: UserPreferencesRepository
+    val driveMediaManager: com.techilyfly.tfplans.data.DriveMediaManager
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -34,7 +35,10 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     override val userPreferencesRepository: UserPreferencesRepository by lazy {
         UserPreferencesRepository(context)
     }
+    override val driveMediaManager: com.techilyfly.tfplans.data.DriveMediaManager by lazy {
+        com.techilyfly.tfplans.data.DriveMediaManager(context, firebaseAuth, userPreferencesRepository)
+    }
     override val notesRepository: com.techilyfly.tfplans.data.NotesRepository by lazy {
-        com.techilyfly.tfplans.data.NotesRepository(context, noteDao, firestore, firebaseAuth, userPreferencesRepository)
+        com.techilyfly.tfplans.data.NotesRepository(context, noteDao, firestore, firebaseAuth, userPreferencesRepository, driveMediaManager)
     }
 }

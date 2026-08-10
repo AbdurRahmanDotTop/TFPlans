@@ -15,9 +15,13 @@ class SyncWorker(
             val app = applicationContext as TFPlansApplication
             val repository = app.container.notesRepository
             repository.purgeCorruptedBlankNotes() // Hard-delete any corrupted blank notes locally and from cloud before sync
-            repository.syncAllNotesWithCloud()
+            val isSuccess = repository.syncAllNotesWithCloud()
             repository.cleanupOldDeletedNotes()
-            Result.success()
+            if (isSuccess) {
+                Result.success()
+            } else {
+                Result.retry()
+            }
         } catch (e: Exception) {
             Result.retry()
         }

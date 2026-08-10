@@ -127,12 +127,12 @@ fun HomeScreen(
             onNavigateBack = { viewModel.setTab("Notes") },
             onNavigateToTab = { tab -> viewModel.setTab(tab) },
             onLogout = {
-                if (isOnline) {
-                    viewModel.logout(context) {
+                viewModel.logout(context) { success, msg ->
+                    if (success) {
                         onLogout()
+                    } else if (msg != null) {
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
                     }
-                } else {
-                    showNoInternetDialog = true
                 }
             },
             onNavigateToAuth = {
@@ -167,8 +167,12 @@ fun HomeScreen(
                     onClick = {
                         showAccountDialog = false
                         if (isOnline) {
-                            viewModel.logout(context) {
-                                onLogout()
+                            viewModel.logout(context) { success, msg ->
+                                if (success) {
+                                    onLogout()
+                                } else if (msg != null) {
+                                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                }
                             }
                         } else {
                             showNoInternetDialog = true
@@ -313,12 +317,12 @@ fun HomeScreen(
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
-                        if (isOnline) {
-                            viewModel.logout(context) {
+                        viewModel.logout(context) { success, msg ->
+                            if (success) {
                                 onLogout()
+                            } else if (msg != null) {
+                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
                             }
-                        } else {
-                            showNoInternetDialog = true
                         }
                     },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)

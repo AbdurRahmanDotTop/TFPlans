@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.techilyfly.tfplans.ui.edit
 
 import android.content.Context
@@ -59,6 +61,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -120,6 +123,7 @@ fun EditNoteScreen(
     var showCategoryDialog by remember { mutableStateOf(false) }
     var showReminderDialog by remember { mutableStateOf(false) }
     var showAudioRecorderDialog by remember { mutableStateOf(false) }
+    var showGoogleRequiredDialog by remember { mutableStateOf(false) }
 
     var contentState by remember(note.id) { mutableStateOf(note.content) }
     var isLocalChange by remember(note.id) { mutableStateOf(false) }
@@ -152,23 +156,56 @@ fun EditNoteScreen(
         }
     }
 
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            Toast.makeText(context, "Google Drive permission granted!", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Google Drive permission denied.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val coroutineScope = rememberCoroutineScope()
+    var isUploadingMedia by remember { mutableStateOf(false) }
+
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val savedUri = copyUriToInternalStorage(context, uri)
-            if (savedUri != null) {
-                val current = note.content
-                val blocks = parseBlocks(current).toMutableList()
-                val nextId = (blocks.maxOfOrNull { it.id } ?: 0) + 1
-                blocks.add(ImageBlock(nextId, savedUri.toString()))
-                val newContent = serializeBlocks(blocks)
-                isLocalChange = true
-                contentState = newContent
-                viewModel.updateContent(newContent)
-                Toast.makeText(context, "Image attached", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, "Failed to attach image", Toast.LENGTH_SHORT).show()
+            val isGoogleUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.providerData?.any { it.providerId == "google.com" } == true
+            val account = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+            val hasDrivePermission = account != null && com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions(account, com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+            
+            if (isGoogleUser && (account == null || !hasDrivePermission)) {
+                showGoogleRequiredDialog = true
+                return@rememberLauncherForActivityResult
+            }
+            
+            coroutineScope.launch {
+                isUploadingMedia = true
+                val savedUri = copyUriToInternalStorage(context, uri)
+                if (savedUri != null) {
+                    try {
+                        val finalUri = viewModel.uploadMediaAndCache(savedUri.toString()) ?: savedUri.toString()
+                        val current = note.content
+                        val blocks = parseBlocks(current).toMutableList()
+                        val nextId = (blocks.maxOfOrNull { it.id } ?: 0) + 1
+                        blocks.add(ImageBlock(nextId, finalUri))
+                        val newContent = serializeBlocks(blocks)
+                        isLocalChange = true
+                        contentState = newContent
+                        viewModel.updateContent(newContent)
+                        Toast.makeText(context, if (finalUri.startsWith("file://drive_media") || finalUri.contains("drive_media")) "Image attached and backed up" else "Image attached locally", Toast.LENGTH_SHORT).show()
+                    } catch (e: com.techilyfly.tfplans.data.DrivePermissionDeniedException) {
+                        showGoogleRequiredDialog = true
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Failed to attach image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    Toast.makeText(context, "Failed to attach image", Toast.LENGTH_SHORT).show()
+                }
+                isUploadingMedia = false
             }
         }
     }
@@ -198,15 +235,36 @@ fun EditNoteScreen(
         AudioRecorderDialog(
             onDismiss = { showAudioRecorderDialog = false },
             onAudioRecorded = { path ->
-                val current = note.content
-                val blocks = parseBlocks(current).toMutableList()
-                val nextId = (blocks.maxOfOrNull { it.id } ?: 0) + 1
-                blocks.add(AudioBlock(nextId, path))
-                val newContent = serializeBlocks(blocks)
-                isLocalChange = true
-                contentState = newContent
-                viewModel.updateContent(newContent)
-                Toast.makeText(context, "Audio recording attached", Toast.LENGTH_SHORT).show()
+                val isGoogleUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.providerData?.any { it.providerId == "google.com" } == true
+                val account = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+                val hasDrivePermission = account != null && com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions(account, com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                
+                if (isGoogleUser && (account == null || !hasDrivePermission)) {
+                    showGoogleRequiredDialog = true
+                    return@AudioRecorderDialog
+                }
+                
+                coroutineScope.launch {
+                    isUploadingMedia = true
+                    try {
+                        val finalUri = viewModel.uploadMediaAndCache(path) ?: path
+                        
+                        val current = note.content
+                        val blocks = parseBlocks(current).toMutableList()
+                        val nextId = (blocks.maxOfOrNull { it.id } ?: 0) + 1
+                        blocks.add(AudioBlock(nextId, finalUri))
+                        val newContent = serializeBlocks(blocks)
+                        isLocalChange = true
+                        contentState = newContent
+                        viewModel.updateContent(newContent)
+                        Toast.makeText(context, if (finalUri.startsWith("file://drive_media") || finalUri.contains("drive_media")) "Audio recording attached and backed up" else "Audio recording attached locally", Toast.LENGTH_SHORT).show()
+                    } catch (e: com.techilyfly.tfplans.data.DrivePermissionDeniedException) {
+                        showGoogleRequiredDialog = true
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Failed to attach audio: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                    isUploadingMedia = false
+                }
             }
         )
     }
@@ -251,6 +309,22 @@ fun EditNoteScreen(
                 viewModel.updateCategory(newCat)
             },
             onDismiss = { showCategoryDialog = false }
+        )
+    }
+    
+    if (isUploadingMedia) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Uploading Media", color = PrimaryColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = PrimaryColor, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("Please wait...", color = SecondaryColor)
+                }
+            },
+            confirmButton = {},
+            containerColor = MaterialTheme.colorScheme.surface
         )
     }
 
@@ -555,7 +629,14 @@ fun EditNoteScreen(
                                 ) {
                                     IconButton(
                                         onClick = {
-                                            imagePickerLauncher.launch("image/*")
+                                            val isGoogleUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.providerData?.any { it.providerId == "google.com" } == true
+                                            val account = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+                                            val hasDriveScope = account != null && com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions(account, com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                                            if (isGoogleUser && hasDriveScope) {
+                                                imagePickerLauncher.launch("image/*")
+                                            } else {
+                                                showGoogleRequiredDialog = true
+                                            }
                                         },
                                         modifier = Modifier.fillMaxSize()
                                     ) {
@@ -576,7 +657,12 @@ fun EditNoteScreen(
                                     Box(contentAlignment = Alignment.TopEnd) {
                                         IconButton(
                                             onClick = {
-                                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                                val isGoogleUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.providerData?.any { it.providerId == "google.com" } == true
+                                                val account = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+                                                val hasDriveScope = account != null && com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions(account, com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                                                if (!isGoogleUser || !hasDriveScope) {
+                                                    showGoogleRequiredDialog = true
+                                                } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                                     showAudioRecorderDialog = true
                                                 } else {
                                                     audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -1205,6 +1291,38 @@ fun EditNoteScreen(
         }
     }
 
+    if (showGoogleRequiredDialog) {
+        AlertDialog(
+            onDismissRequest = { showGoogleRequiredDialog = false },
+            title = { Text("Google Drive Permission Required", color = PrimaryColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) },
+            text = { Text("Google Drive permission is required to safely backup your image and audio attachments into visible folders. Please re-authenticate with Google.", color = SecondaryColor) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showGoogleRequiredDialog = false
+                        val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+                        val webClientId = if (resId != 0) context.getString(resId) else "174888666914-8jpbbn0oud27f1gifvn7gger77djsq7j.apps.googleusercontent.com"
+                        val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
+                            .requestIdToken(webClientId)
+                            .requestEmail()
+                            .requestScopes(com.google.android.gms.common.api.Scope(com.google.api.services.drive.DriveScopes.DRIVE_FILE))
+                            .build()
+                        val googleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
+                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor)
+                ) {
+                    Text("Continue with Google")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGoogleRequiredDialog = false }) {
+                    Text("Cancel", color = SecondaryColor)
+                }
+            }
+        )
+    }
+
     if (browserUrl != null) {
         com.techilyfly.tfplans.ui.settings.InAppBrowserScreen(
             initialUrl = browserUrl!!,
@@ -1698,7 +1816,9 @@ fun AudioRecorderDialog(
     var isPlaying by remember { mutableStateOf(false) }
 
     val filePath = remember {
-        "${context.cacheDir.absolutePath}/audio_${System.currentTimeMillis()}.3gp"
+        val audioDir = java.io.File(context.filesDir, "note_audio")
+        if (!audioDir.exists()) audioDir.mkdirs()
+        java.io.File(audioDir, "audio_${System.currentTimeMillis()}.3gp").absolutePath
     }
 
     DisposableEffect(Unit) {
@@ -1787,7 +1907,8 @@ fun AudioRecorderDialog(
                         }
                     }
 
-                    if (recordedPath != null) {
+                    val currentRecordedPath = recordedPath
+                    if (currentRecordedPath != null) {
                         Button(
                             onClick = {
                                 try {
@@ -1798,7 +1919,8 @@ fun AudioRecorderDialog(
                                         isPlaying = false
                                     } else {
                                         val player = MediaPlayer().apply {
-                                            setDataSource(recordedPath)
+                                            val path = if (currentRecordedPath.startsWith("file://")) currentRecordedPath.substring(7) else currentRecordedPath
+                                            setDataSource(path)
                                             prepare()
                                             start()
                                             setOnCompletionListener {
@@ -1892,7 +2014,12 @@ fun AudioPlayerCard(audioPath: String, onDelete: () -> Unit) {
                                 isPlaying = false
                             } else {
                                 val player = MediaPlayer().apply {
-                                    setDataSource(audioPath)
+                                    val safePath = if (audioPath.startsWith("file://")) {
+                                        java.net.URI(audioPath).path
+                                    } else {
+                                        audioPath
+                                    }
+                                    setDataSource(safePath)
                                     prepare()
                                     start()
                                     setOnCompletionListener {

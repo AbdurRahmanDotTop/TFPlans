@@ -34,6 +34,9 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE isSynced = 0")
     suspend fun getUnsyncedNotes(): List<Note>
 
+    @Query("SELECT COUNT(*) FROM notes WHERE isSynced = 0")
+    suspend fun getUnsyncedNotesCount(): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNotes(notes: List<Note>)
 

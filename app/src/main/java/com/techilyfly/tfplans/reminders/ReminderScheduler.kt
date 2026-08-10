@@ -35,61 +35,24 @@ object ReminderScheduler {
         )
 
         try {
-            // Use setAlarmClock as the primary exact scheduling mechanism because it is highly reliable and doesn't require SCHEDULE_EXACT_ALARM permission starting Android 12+
-            val showIntent = Intent(context, MainActivity::class.java).apply {
-                putExtra("NOTE_ID", note.id)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            // Google Play Policy strictly restricts SCHEDULE_EXACT_ALARM. 
+            // We use setAndAllowWhileIdle for Android 6.0+ which is inexact but allows waking up the device.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    reminderTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.set(
+                    AlarmManager.RTC_WAKEUP,
+                    reminderTime,
+                    pendingIntent
+                )
             }
-            val showPendingIntent = PendingIntent.getActivity(
-                context,
-                note.id.hashCode() + 9,
-                showIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val info = AlarmManager.AlarmClockInfo(reminderTime, showPendingIntent)
-            alarmManager.setAlarmClock(info, pendingIntent)
-            Log.d(TAG, "Scheduled alarm via setAlarmClock for note ${note.id} at $reminderTime")
+            Log.d(TAG, "Scheduled inexact alarm for note ${note.id} at $reminderTime")
         } catch (e: Exception) {
-            Log.e(TAG, "Error scheduling alarm via setAlarmClock: ${e.message}. Trying fallback...", e)
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    if (alarmManager.canScheduleExactAlarms()) {
-                        alarmManager.setExactAndAllowWhileIdle(
-                            AlarmManager.RTC_WAKEUP,
-                            reminderTime,
-                            pendingIntent
-                        )
-                        Log.d(TAG, "Fallback scheduled exact alarm for note ${note.id} at $reminderTime")
-                    } else {
-                        alarmManager.setAndAllowWhileIdle(
-                            AlarmManager.RTC_WAKEUP,
-                            reminderTime,
-                            pendingIntent
-                        )
-                        Log.d(TAG, "Fallback scheduled in-exact alarm for note ${note.id} at $reminderTime")
-                    }
-                } else {
-                    alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        reminderTime,
-                        pendingIntent
-                    )
-                    Log.d(TAG, "Fallback scheduled exact alarm for note ${note.id} at $reminderTime")
-                }
-            } catch (ex: Exception) {
-                Log.e(TAG, "Failed all exact alarm scheduling attempts: ${ex.message}", ex)
-                // Ultimately fallback to non-exact standard set
-                try {
-                    alarmManager.set(
-                        AlarmManager.RTC_WAKEUP,
-                        reminderTime,
-                        pendingIntent
-                    )
-                    Log.d(TAG, "Final fallback scheduled alarm for note ${note.id}")
-                } catch (anyEx: Exception) {
-                    Log.e(TAG, "Critical alarm scheduling crash: ${anyEx.message}", anyEx)
-                }
-            }
+            Log.e(TAG, "Failed to schedule alarm: ${e.message}", e)
         }
     }
 

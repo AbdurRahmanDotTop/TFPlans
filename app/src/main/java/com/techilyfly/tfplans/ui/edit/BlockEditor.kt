@@ -44,6 +44,7 @@ import coil.compose.AsyncImage
 import com.techilyfly.tfplans.ui.theme.BackgroundColor
 import com.techilyfly.tfplans.ui.theme.PrimaryColor
 import com.techilyfly.tfplans.ui.theme.SecondaryColor
+import com.techilyfly.tfplans.ui.theme.ErrorColor
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -761,20 +762,49 @@ fun NoteBlockEditor(
                 is ImageBlock -> {
                     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                         val parsedUri = Uri.parse(block.uri)
+                        var isMissing = false
                         val imageModel: Any = if (parsedUri.scheme == "file" && parsedUri.path != null) {
-                            java.io.File(parsedUri.path!!)
+                            val file = java.io.File(parsedUri.path!!)
+                            if (!file.exists()) isMissing = true
+                            file
+                        } else if (block.uri.startsWith("drive://")) {
+                            isMissing = true
+                            block.uri
                         } else {
                             parsedUri
                         }
                         
-                        AsyncImage(
-                            model = imageModel,
-                            contentDescription = "Attached Image",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp)),
-                            contentScale = ContentScale.FillWidth
-                        )
+                        if (isMissing) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = ErrorColor.copy(alpha = 0.1f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, ErrorColor.copy(alpha = 0.3f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.Image, contentDescription = null, tint = ErrorColor, modifier = Modifier.size(32.dp))
+                                    Spacer(modifier = Modifier.width(16.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Image Not Available", color = ErrorColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                        val message = if (block.uri.startsWith("drive://")) "Downloading from Google Drive..." else "The local file has been deleted or is unavailable."
+                                        Text(message, color = ErrorColor, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        } else {
+                            AsyncImage(
+                                model = imageModel,
+                                contentDescription = "Attached Image",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.FillWidth
+                            )
+                        }
+                        
                         IconButton(
                             onClick = {
                                 val newBlocks = blocks.toMutableList()
@@ -792,10 +822,23 @@ fun NoteBlockEditor(
                     }
                 }
                 is AudioBlock -> {
+                    val parsedUri = Uri.parse(block.uri)
+                    var isMissing = false
+                    if (parsedUri.scheme == "file" && parsedUri.path != null) {
+                        if (!java.io.File(parsedUri.path!!).exists()) isMissing = true
+                    } else if (block.uri.startsWith("drive://")) {
+                        isMissing = true
+                    }
+                    
+                    val cardColor = if (isMissing) ErrorColor.copy(alpha = 0.1f) else iconColor.copy(alpha = 0.1f)
+                    val iconTint = if (isMissing) ErrorColor else iconColor
+                    val textCol = if (isMissing) ErrorColor else textColor
+                    
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = iconColor.copy(alpha = 0.1f))
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        border = if (isMissing) androidx.compose.foundation.BorderStroke(1.dp, ErrorColor.copy(alpha = 0.3f)) else null
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -803,7 +846,7 @@ fun NoteBlockEditor(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = iconColor,
+                                color = iconTint,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -811,12 +854,18 @@ fun NoteBlockEditor(
                                 }
                             }
                             Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = "Audio Recording",
-                                color = textColor,
-                                fontSize = 16.sp,
-                                modifier = Modifier.weight(1f)
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isMissing) "Audio Not Available" else "Audio Recording",
+                                    color = textCol,
+                                    fontSize = 16.sp,
+                                    fontWeight = if (isMissing) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal
+                                )
+                                if (isMissing) {
+                                    val message = if (block.uri.startsWith("drive://")) "Downloading..." else "Deleted"
+                                    Text(message, color = ErrorColor, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
                             IconButton(
                                 onClick = {
                                     val newBlocks = blocks.toMutableList()
@@ -824,7 +873,7 @@ fun NoteBlockEditor(
                                     updateBlocks(newBlocks)
                                 }
                             ) {
-                                Icon(Icons.Filled.Close, contentDescription = "Remove Audio", tint = textColor.copy(alpha = 0.5f))
+                                Icon(Icons.Filled.Close, contentDescription = "Remove Audio", tint = textCol.copy(alpha = 0.5f))
                             }
                         }
                     }
