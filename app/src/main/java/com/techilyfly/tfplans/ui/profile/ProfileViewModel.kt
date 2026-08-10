@@ -189,14 +189,14 @@ class ProfileViewModel(
 
     fun logout(context: Context, force: Boolean = false, onResult: (Boolean, String?, Boolean) -> Unit) {
         viewModelScope.launch {
-            if (!force && repository.hasUnsyncedData()) {
-                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        onResult(false, "You have unsynced data. Please connect to the internet to sync your data before signing out to prevent data loss.", true)
-                    }
-                    return@launch
+            if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(false, "An active internet connection is required to sign out safely.", false)
                 }
-                
+                return@launch
+            }
+            
+            if (!force && repository.hasUnsyncedData()) {
                 val syncSuccess = repository.syncAllNotesWithCloud()
                 if (!syncSuccess) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -237,19 +237,15 @@ class ProfileViewModel(
         }
         
         viewModelScope.launch {
+            if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                onResult(false, "An active internet connection is required to delete your account safely.", false)
+                return@launch
+            }
+            
             if (!force && repository.hasUnsyncedData()) {
-                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
-                    onResult(false, "You have unsynced data. Please connect to the internet to sync your data before deleting your account to prevent data loss.", true)
-                    return@launch
-                }
                 val syncSuccess = repository.syncAllNotesWithCloud()
                 if (!syncSuccess) {
                     onResult(false, "Failed to sync pending data. Please try again.", true)
-                    return@launch
-                }
-            } else if (!force) {
-                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
-                    onResult(false, "An active internet connection is required to delete your account.", false)
                     return@launch
                 }
             }

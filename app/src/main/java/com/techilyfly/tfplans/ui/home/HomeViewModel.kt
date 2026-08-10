@@ -54,14 +54,21 @@ class HomeViewModel(
             initialValue = 0
         )
 
+    val isInitialSyncCompleted: StateFlow<Boolean> = repository.isInitialSyncCompleted
+
     init {
         if (auth.currentUser != null && preferencesRepository.cloudBackup.value) {
-            repository.startRealtimeSync()
             viewModelScope.launch {
+                if (!repository.isInitialSyncCompleted.value) {
+                    repository.initialSyncWithCloud()
+                }
+                repository.startRealtimeSync()
                 try {
                     repository.syncAllNotesWithCloud()
                 } catch (_: Exception) {}
             }
+        } else {
+            repository.isInitialSyncCompleted.value = true
         }
     }
 
@@ -82,14 +89,14 @@ class HomeViewModel(
 
     fun logout(context: Context, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
-            if (repository.hasUnsyncedData()) {
-                if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        onResult(false, "You have unsynced data. Please connect to the internet to sync your data before signing out to prevent data loss.")
-                    }
-                    return@launch
+            if (!com.techilyfly.tfplans.ui.auth.isOnline(context)) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(false, "An active internet connection is required to sign out safely.")
                 }
-                
+                return@launch
+            }
+            
+            if (repository.hasUnsyncedData()) {
                 val syncSuccess = repository.syncAllNotesWithCloud()
                 if (!syncSuccess) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {

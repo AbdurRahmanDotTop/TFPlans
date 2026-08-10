@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -27,6 +28,8 @@ class NotesRepository(
     private val preferencesRepository: UserPreferencesRepository,
     private val driveMediaManager: DriveMediaManager
 ) {
+    val isInitialSyncCompleted = MutableStateFlow(false)
+
     suspend fun initializeDriveFolders() {
         try {
             val result = driveMediaManager.initializeFolders()
@@ -214,6 +217,11 @@ class NotesRepository(
                 for (note in successfullySyncedNotes) {
                     noteDao.markAsSyncedIfUnchanged(note.id, note.updatedAt)
                 }
+                
+                if (successfullySyncedNotes.size != unsyncedNotes.size) {
+                    android.util.Log.e("NotesRepository", "Some notes failed to sync (media upload failed). Aborting sync success.")
+                    return@withContext false
+                }
             }
 
             // 3. Sync settings safely
@@ -390,6 +398,41 @@ class NotesRepository(
             }
         } catch (e: Exception) {
             throw e
+        }
+    }
+    
+    suspend fun initialSyncWithCloud() = withContext(Dispatchers.IO + NonCancellable) {
+        val user = auth.currentUser ?: return@withContext
+        try {
+            val userNotesRef = firestore.collection("Users").document(user.uid).collection("Notes")
+            val snapshot = userNotesRef.get().await()
+            val remoteNotes = snapshot.documents.mapNotNull { mapDocumentToNote(it) }
+            
+            if (remoteNotes.isNotEmpty()) {
+                val processedNotes = remoteNotes.map { note ->
+                    val downloadedContent = driveMediaManager.processNoteForDownload(note.content)
+                    note.copy(content = downloadedContent, isSynced = true)
+                }
+                
+                val localNotes = noteDao.getAllNotes().associateBy { it.id }
+                val toInsertOrUpdate = mutableListOf<Note>()
+                
+                for (remoteNote in processedNotes) {
+                    val localNote = localNotes[remoteNote.id]
+                    if (localNote == null || (!localNote.isSynced && remoteNote.updatedAt > localNote.updatedAt) || (localNote.isSynced && localNote != remoteNote)) {
+                        toInsertOrUpdate.add(remoteNote)
+                    }
+                }
+                
+                if (toInsertOrUpdate.isNotEmpty()) {
+                    noteDao.insertNotes(toInsertOrUpdate)
+                }
+            }
+            
+            isInitialSyncCompleted.value = true
+        } catch (e: Exception) {
+            android.util.Log.e("NotesRepository", "Failed initial sync: ${e.message}")
+            isInitialSyncCompleted.value = true // Ensure UI doesn't hang forever
         }
     }
 

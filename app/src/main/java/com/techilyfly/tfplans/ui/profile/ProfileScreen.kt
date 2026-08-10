@@ -108,6 +108,8 @@ fun ProfileScreen(
     val surfaceColor = MaterialTheme.colorScheme.surface
     val errorColor = MaterialTheme.colorScheme.error
 
+    var isProcessingAccountDeletion by remember { mutableStateOf(false) }
+
     val networkObserver = remember { com.techilyfly.tfplans.util.NetworkConnectivityObserver(context) }
     val isOnline by networkObserver.isOnline.collectAsState(initial = com.techilyfly.tfplans.ui.auth.isOnline(context))
 
@@ -146,22 +148,23 @@ fun ProfileScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Profile", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = primaryColor,
-                    navigationIconContentColor = primaryColor
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Profile", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        titleContentColor = primaryColor,
+                        navigationIconContentColor = primaryColor
+                    )
                 )
-            )
-        },
+            },
         bottomBar = {
             com.techilyfly.tfplans.ui.components.AppBottomBar(
                 currentTab = "Settings",
@@ -901,16 +904,15 @@ fun ProfileScreen(
     }
 
     if (showDeleteAccountDialog) {
-        var isDeleting by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { if (!isDeleting) showDeleteAccountDialog = false },
+            onDismissRequest = { if (!isProcessingAccountDeletion) showDeleteAccountDialog = false },
             title = { Text("Delete Account", fontWeight = FontWeight.Bold, color = errorColor) },
             text = { Text("Are you sure you want to delete your account? This action cannot be undone. All your notes and settings will be permanently removed.", color = secondaryColor) },
             confirmButton = {
                 Button(onClick = {
-                    isDeleting = true
+                    isProcessingAccountDeletion = true
                     viewModel.deleteAccount(context, force = false) { success, msg, requiresForceConfirm ->
-                        isDeleting = false
+                        isProcessingAccountDeletion = false
                         if (success) {
                             showDeleteAccountDialog = false
                             onNavigateToAuth()
@@ -924,18 +926,49 @@ fun ProfileScreen(
                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
                     }
-                }, colors = ButtonDefaults.buttonColors(containerColor = errorColor), enabled = !isDeleting) {
-                    if (isDeleting) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    else Text("Delete")
+                }, colors = ButtonDefaults.buttonColors(containerColor = errorColor), enabled = !isProcessingAccountDeletion) {
+                    Text("Delete")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { if (!isDeleting) showDeleteAccountDialog = false }) {
+                TextButton(onClick = { if (!isProcessingAccountDeletion) showDeleteAccountDialog = false }) {
                     Text("Cancel", color = secondaryColor)
                 }
             }
         )
     }
+    
+    if (isLoggingOut || isProcessingAccountDeletion) {
+        Surface(
+            color = MaterialTheme.colorScheme.background.copy(alpha = 0.98f),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    color = primaryColor,
+                    modifier = Modifier.size(48.dp),
+                    strokeWidth = 4.dp
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Text(
+                    text = if (isLoggingOut) "Signing out safely..." else "Deleting your account...",
+                    color = primaryColor,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Please wait a moment.",
+                    color = secondaryColor,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}
 }
 
 @Composable

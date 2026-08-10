@@ -76,6 +76,7 @@ fun HomeScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val fontSize by viewModel.fontSize.collectAsState()
     val defaultView by viewModel.defaultView.collectAsState()
+    val isInitialSyncCompleted by viewModel.isInitialSyncCompleted.collectAsState()
     val context = LocalContext.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -331,9 +332,10 @@ fun HomeScreen(
             }
         }
     ) {
-        Scaffold(
-            containerColor = Color.Transparent,
-            modifier = Modifier.background(backgroundGradient),
+        Box(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                modifier = Modifier.background(backgroundGradient),
             topBar = {
                 // Glass-styled Header matching HTML template
                 Surface(
@@ -693,8 +695,41 @@ fun HomeScreen(
                     }
                 }
             }
+            
+            val isInitialSyncCompleted by viewModel.isInitialSyncCompleted.collectAsState()
+            if (!isInitialSyncCompleted) {
+                Surface(
+                    color = MaterialTheme.colorScheme.background.copy(alpha = 0.98f),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = PrimaryColor,
+                            modifier = Modifier.size(48.dp),
+                            strokeWidth = 4.dp
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Text(
+                            text = "Your notes are being downloaded and synced...",
+                            color = PrimaryColor,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Please wait a moment.",
+                            color = SecondaryColor,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
         }
     }
+}
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
