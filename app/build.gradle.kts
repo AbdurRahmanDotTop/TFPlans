@@ -18,8 +18,8 @@ android {
     applicationId = "com.techilyfly.tfplans"
     minSdk = 24
     targetSdk = 35
-    versionCode = 12
-    versionName = "1.2.0"
+    versionCode = 13
+    versionName = "1.2.1"
     multiDexEnabled = true
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
