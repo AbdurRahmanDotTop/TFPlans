@@ -192,7 +192,10 @@ class DriveMediaManager(
         try {
             val drive = getDriveService() ?: return@withContext false
             
-            if (destFile.exists()) return@withContext true
+            if (destFile.exists()) {
+                if (destFile.length() > 0) return@withContext true
+                else destFile.delete() // Corrupted empty file, delete and try downloading again
+            }
 
             FileOutputStream(destFile).use { out ->
                 drive.files().get(driveFileId)
@@ -252,71 +255,95 @@ class DriveMediaManager(
     // Parses note content JSON, uploads any local files to Drive, 
     // and replaces the local URI with the Drive File ID prefix (e.g. drive://ID)
     suspend fun processNoteForUpload(contentJson: String): String {
-        var processedJson = contentJson
-        val uriRegex = """"uri"\s*:\s*"([^"]+)"""".toRegex()
-        
-        val matches = uriRegex.findAll(contentJson).toList()
-        for (match in matches) {
-            val uri = match.groupValues[1]
-            if (uri.startsWith("/") || uri.startsWith("file://")) {
-                val originalFile = if (uri.startsWith("file://")) File(URI(uri)) else File(uri)
-                val mediaDir = File(context.filesDir, "drive_media")
-                
-                // If it's already in drive_media, its name is the Drive ID. Skip upload.
-                if (originalFile.parentFile?.absolutePath == mediaDir.absolutePath) {
-                    val driveId = originalFile.name
-                    processedJson = processedJson.replace(
-                        """"uri":"$uri"""", 
-                        """"uri":"drive://$driveId""""
-                    )
-                } else {
-                    val driveId = uploadMedia(uri)
-                    if (driveId != null) {
-                        // Copy to drive_media to prevent re-downloading later
-                        try {
-                            if (!mediaDir.exists()) mediaDir.mkdirs()
-                            val driveFile = File(mediaDir, driveId)
-                            if (originalFile.exists() && originalFile.absolutePath != driveFile.absolutePath) {
-                                originalFile.copyTo(driveFile, overwrite = true)
+        if (!contentJson.trimStart().startsWith("[")) return contentJson
+        try {
+            val jsonArray = org.json.JSONArray(contentJson)
+            var changed = false
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                if (obj.has("uri")) {
+                    val uri = obj.getString("uri")
+                    if (uri.startsWith("/") || uri.startsWith("file://")) {
+                        val originalFile = if (uri.startsWith("file://")) File(URI(uri)) else File(uri)
+                        val mediaDir = File(context.filesDir, "drive_media")
+                        
+                        // If it's already in drive_media, its name is the Drive ID. Skip upload.
+                        if (originalFile.parentFile?.absolutePath == mediaDir.absolutePath) {
+                            val driveId = originalFile.name
+                            obj.put("uri", "drive://$driveId")
+                            changed = true
+                        } else {
+                            val driveId = uploadMedia(uri)
+                            if (driveId != null) {
+                                // Copy to drive_media to prevent re-downloading later
+                                try {
+                                    if (!mediaDir.exists()) mediaDir.mkdirs()
+                                    val driveFile = File(mediaDir, driveId)
+                                    if (originalFile.exists() && originalFile.absolutePath != driveFile.absolutePath) {
+                                        originalFile.copyTo(driveFile, overwrite = true)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("DriveMediaManager", "Error copying local file: ${e.message}")
+                                }
+            
+                                obj.put("uri", "drive://$driveId")
+                                changed = true
                             }
-                        } catch (e: Exception) {
-                            Log.e("DriveMediaManager", "Error copying local file: ${e.message}")
                         }
-    
-                        processedJson = processedJson.replace(
-                            """"uri":"$uri"""", 
-                            """"uri":"drive://$driveId""""
-                        )
                     }
                 }
             }
+            if (changed) {
+                // Prevent org.json from corrupting the JSON by escaping forward slashes
+                return jsonArray.toString().replace("\\/", "/")
+            }
+        } catch (e: Exception) {
+            Log.e("DriveMediaManager", "JSON processing for upload failed: ${e.message}")
         }
-        return processedJson
+        return contentJson
     }
 
     // Parses note content JSON, downloads any Drive files locally, 
     // and replaces the Drive File ID prefix with the local URI
     suspend fun processNoteForDownload(contentJson: String): String {
-        var processedJson = contentJson
-        val uriRegex = """"uri"\s*:\s*"drive://([^"]+)"""".toRegex()
-        
-        val matches = uriRegex.findAll(contentJson).toList()
-        if (matches.isEmpty()) return contentJson
+        if (!contentJson.trimStart().startsWith("[")) return contentJson
+        try {
+            val jsonArray = org.json.JSONArray(contentJson)
+            var changed = false
+            val mediaDir = File(context.filesDir, "drive_media")
+            if (!mediaDir.exists()) mediaDir.mkdirs()
 
-        val mediaDir = File(context.filesDir, "drive_media")
-        if (!mediaDir.exists()) mediaDir.mkdirs()
-
-        for (match in matches) {
-            val driveId = match.groupValues[1]
-            val localFile = File(mediaDir, driveId)
-            val success = downloadMedia(driveId, localFile)
-            if (success) {
-                processedJson = processedJson.replace(
-                    """"uri":"drive://$driveId"""", 
-                    """"uri":"file://${localFile.absolutePath}""""
-                )
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                if (obj.has("uri")) {
+                    val uri = obj.getString("uri")
+                    var driveIdToDownload: String? = null
+                    
+                    if (uri.startsWith("drive://")) {
+                        driveIdToDownload = uri.substringAfter("drive://")
+                    } else if (uri.contains("/drive_media/")) {
+                        // RECOVERY: If a local URL was mistakenly uploaded to the cloud by an older app version,
+                        // we can still recover the Drive ID from the file name.
+                        driveIdToDownload = uri.substringAfterLast("/")
+                    }
+                    
+                    if (driveIdToDownload != null) {
+                        val localFile = File(mediaDir, driveIdToDownload)
+                        val success = downloadMedia(driveIdToDownload, localFile)
+                        if (success) {
+                            obj.put("uri", "file://${localFile.absolutePath}")
+                            changed = true
+                        }
+                    }
+                }
             }
+            if (changed) {
+                // Prevent org.json from corrupting the JSON by escaping forward slashes
+                return jsonArray.toString().replace("\\/", "/")
+            }
+        } catch (e: Exception) {
+            Log.e("DriveMediaManager", "JSON processing for download failed: ${e.message}")
         }
-        return processedJson
+        return contentJson
     }
 }
